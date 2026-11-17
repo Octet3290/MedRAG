@@ -1,3 +1,4 @@
+import logging
 import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -7,10 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.models  # noqa: F401 - ensure all ORM models are registered
 from app.api.v1.router import api_v1_router
 from app.core.config import settings
-from app.core.database import get_db
+from app.core.database import engine, get_db
+from app.models.base import Base
 from app.schemas.health import HealthResponse
+
+logger = logging.getLogger("medrag.main")
 
 if sys.platform == "win32":
     import asyncio
@@ -22,8 +27,15 @@ if sys.platform == "win32":
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Application lifespan context manager for startup and shutdown events.
+    Auto-initializes pgvector extension and ensures database tables exist.
     """
-    # Startup logic
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database schemas and pgvector extension verified.")
+    except Exception as exc:
+        logger.warning("Database auto-initialization notice: %s", exc)
     yield
     # Shutdown logic
 
@@ -44,6 +56,7 @@ def create_application() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
+        allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
